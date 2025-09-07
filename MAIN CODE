@@ -1,0 +1,112 @@
+//@version=5
+strategy("Amp ver3 (Improved) + Alerts Control", overlay=true, alert_message="Amp Strategy Alert")
+
+// --- Inputs ---
+customTimeFrame = input.timeframe("60", title="Custom Timeframe") 
+rectangleColor = input.color(color.green, title="Rectangle Color") 
+targetHours = input.string("0,8,16", title="Target Hours (Comma-separated)")
+targetMinute = input.int(0, title="Target Minute") 
+daysToTrade = input.int(7, title="Number of Days to Trade", minval=1)  
+trailOffset = input.float(20, title="Trail Offset (in pips)", minval=0.1) 
+
+// --- Alert Controls ---
+enableBuyAlerts = input.bool(true, title="Enable Buy Alerts", group="Alerts")
+enableSellAlerts = input.bool(true, title="Enable Sell Alerts", group="Alerts")
+enableExitAlerts = input.bool(true, title="Enable Exit Alerts", group="Alerts")
+
+// --- Filters ---
+useTrendFilter = input.bool(true, title="Use Trend Filter (SMA 50)") 
+useVolumeFilter = input.bool(true, title="Use Volume Filter") 
+confirmCandle = input.bool(true, title="Require Bullish/Bearish Candle") 
+
+// --- Indicators ---
+emaValue = ta.ema(close, 20)
+sma50 = ta.sma(close, 50) 
+volumeSma = ta.sma(volume, 20)
+
+// --- Variables ---
+var float highLevel = na
+var float lowLevel = na
+var float entryPrice = na
+var bool isBuySignal = false
+var bool isSellSignal = false
+var float currentStopLoss = na
+var float currentTakeProfit = na
+
+// --- Parse Target Hours ---
+targetHoursArray = str.split(targetHours, ",")
+isTargetHour = false 
+for targetH in targetHoursArray
+    if targetH == str.tostring(hour(time)) 
+        isTargetHour := true 
+
+// --- Logic ---
+startDate = timestamp(year(timenow), month(timenow), dayofmonth(timenow) - daysToTrade, 0, 0) 
+
+if (time >= startDate) 
+    if (time(timeframe.period) == time(customTimeFrame)) 
+        if isTargetHour and (minute(time(timeframe.period)) == targetMinute) 
+            highLevel := high 
+            lowLevel := low 
+            box.new(bar_index, lowLevel, bar_index + 500, highLevel, border_color=rectangleColor, bgcolor=color.new(rectangleColor, 70)) 
+
+// --- Filters ---
+trendFilter = not useTrendFilter or (close > sma50)
+volumeFilter = not useVolumeFilter or (volume > volumeSma) 
+bullishCandle = not confirmCandle or (close > open)
+bearishCandle = not confirmCandle or (close < open)
+
+// --- Signals ---
+longSignal = close > highLevel and not na(highLevel) and not isBuySignal and trendFilter and volumeFilter and bullishCandle 
+shortSignal = close < lowLevel and not na(lowLevel) and not isSellSignal and (not useTrendFilter or close < sma50) and volumeFilter and bearishCandle 
+
+// --- Execution ---
+if (bar_index > 0) 
+    if close[1] <= highLevel and longSignal 
+        entryPrice := close 
+        currentStopLoss := entryPrice - (entryPrice - lowLevel)
+        currentTakeProfit := entryPrice + 3 * (entryPrice - currentStopLoss)
+        strategy.entry("Buy", strategy.long) 
+        if enableBuyAlerts
+            alert("BUY SIGNAL: Entry=" + str.tostring(entryPrice) + 
+                  " | SL=" + str.tostring(currentStopLoss) + 
+                  " | TP=" + str.tostring(currentTakeProfit), alert.freq_once_per_bar)
+        label.new(bar_index, low, " " + str.tostring(close), color=color.green, style=label.style_label_left) 
+        isBuySignal := true 
+
+    if close[1] >= lowLevel and shortSignal 
+        entryPrice := close 
+        currentStopLoss := entryPrice + (highLevel - entryPrice)
+        currentTakeProfit := entryPrice - 3 * (currentStopLoss - entryPrice)
+        strategy.entry("Sell", strategy.short) 
+        if enableSellAlerts
+            alert("SELL SIGNAL: Entry=" + str.tostring(entryPrice) + 
+                  " | SL=" + str.tostring(currentStopLoss) + 
+                  " | TP=" + str.tostring(currentTakeProfit), alert.freq_once_per_bar)
+        label.new(bar_index, high, "" + str.tostring(close), color=color.red, style=label.style_label_right) 
+        isSellSignal := true 
+
+// --- Exit Conditions ---
+if isBuySignal 
+    strategy.exit("TP/SL Buy", "Buy", stop=currentStopLoss, limit=currentTakeProfit, 
+                 trail_price=entryPrice + trailOffset * syminfo.mintick, 
+                 trail_offset=trailOffset * syminfo.mintick,
+                 alert_message= enableExitAlerts ? "EXIT LONG: Price=" + str.tostring(close) + 
+                 " | Profit=" + str.tostring(strategy.position_size * (close - entryPrice)) : "")
+
+if isSellSignal 
+    strategy.exit("TP/SL Sell", "Sell", stop=currentStopLoss, limit=currentTakeProfit,
+                 trail_price=entryPrice - trailOffset * syminfo.mintick,
+                 trail_offset=trailOffset * syminfo.mintick,
+                 alert_message= enableExitAlerts ? "EXIT SHORT: Price=" + str.tostring(close) + 
+                 " | Profit=" + str.tostring(strategy.position_size * (entryPrice - close)) : "")
+
+// --- Reset Signals ---
+if close < highLevel 
+    isBuySignal := false 
+if close > lowLevel 
+    isSellSignal := false 
+
+// --- Plots ---
+plot(emaValue, color=color.red, title="EMA 20") 
+plot(sma50, color=color.blue, title="SMA 50", linewidth=2)
